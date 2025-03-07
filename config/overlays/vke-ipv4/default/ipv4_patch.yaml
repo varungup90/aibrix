@@ -6,6 +6,15 @@ metadata:
 spec:
   provider:
     kubernetes:
+      envoyDeployment:
+        container:
+          resources:
+            requests:
+              cpu: 4
+              memory: 4Gi
+            limits:
+              cpu: 4
+              memory: 4Gi
       envoyService:
         patch:
           value:
