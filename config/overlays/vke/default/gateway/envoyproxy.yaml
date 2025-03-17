@@ -20,8 +20,19 @@ spec:
                 - IPv6
               ipFamilyPolicy: PreferDualStack
       envoyDeployment:
-        pod:
-          annotations:
-            vci.vke.volcengine.com/pod-ip-family: dualstack
-        container:
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:distroless-v1.31.0
+        patch:
+          type: StrategicMerge
+          value:
+            pod:
+              annotations:
+                vci.vke.volcengine.com/pod-ip-family: dualstack
+            container:
+              name: envoy
+              image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:distroless-v1.31.0
+              resources:
+                requests:
+                  cpu: 2
+                  memory: 8Gi
+                limits:
+                  cpu: 2
+                  memory: 8Gi

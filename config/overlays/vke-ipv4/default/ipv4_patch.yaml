@@ -6,6 +6,28 @@ metadata:
 spec:
   provider:
     kubernetes:
+      # envoyDeployment:
+      #   patch:
+      #     value:
+      #       container:
+      #         image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:distroless-v1.31.0
+      #         resources:
+      #           requests:
+      #             cpu: 2
+      #             memory: 8Gi
+      #           limits:
+      #             cpu: 2
+      #             memory: 8Gi
+      envoyDeployment:
+        container:
+          resources:
+            requests:
+              cpu: 2
+              memory: 8Gi
+            limits:
+              cpu: 2
+              memory: 8Gi
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:distroless-v1.31.0
       envoyService:
         patch:
           value:

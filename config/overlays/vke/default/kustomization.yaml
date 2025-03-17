@@ -3,10 +3,8 @@ kind: Kustomization
 
 resources:
 - ../../../default
-- gateway/envoyproxy.yaml
+- gateway/
 
-patches:
-  - path: gateway/gateway_patch.yaml
 
 images:
 - name: quay.io/kuberay/operator

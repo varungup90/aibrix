@@ -1,3 +1,14 @@
-resources:
-  - ../../../../gateway
-  - envoyproxy.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# patches:
+# - path: envoyproxy.yaml
+#   target:
+#     kind: EnvoyProxy
+#     name: aibrix-custom-proxy-config
+# - path: gateway-plugins-patch.yaml
+
+images:
+- name: envoyproxy/envoy
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy
+  newTag: distroless-v1.31.0
