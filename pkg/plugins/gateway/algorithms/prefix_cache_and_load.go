@@ -222,10 +222,10 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 	}
 	prefillTime := (baseTime + attnQuad) / 0.9
 	numPods := node.GetModelToPodCount() // You might need to adjust this based on your actual GPU allocation tracking
-	klog.Infof("numTokens: %d, contextLength: %d, targetGPU: %s", numTokens, contextLength, targetGPU)
-	klog.Infof("prefillTime: %.2f = (Base time(%.2f) + attnQuad(%.2f)) / 0.9", prefillTime, baseTime, attnQuad)
+	klog.V(5).Infof("numTokens: %d, contextLength: %d, targetGPU: %s", numTokens, contextLength, targetGPU)
+	klog.V(5).Infof("prefillTime: %.2f = (Base time(%.2f) + attnQuad(%.2f)) / 0.9", prefillTime, baseTime, attnQuad)
 	totalPrefillCost := missRate * float64(h.nodeToCount[node]) * prefillTime / float64(numPods)
-	klog.Infof("totalPrefillCost: %.2f = miss rate(%.2f) * nodeToCount(%d) * prefillTime(%.2f) / numPods(%d)", totalPrefillCost, missRate, h.nodeToCount[node], prefillTime, numPods)
+	klog.V(5).Infof("totalPrefillCost: %.2f = miss rate(%.2f) * nodeToCount(%d) * prefillTime(%.2f) / numPods(%d)", totalPrefillCost, missRate, h.nodeToCount[node], prefillTime, numPods)
 	return totalPrefillCost
 }
 
@@ -453,22 +453,22 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 	defer p.mu.Unlock()
 
 	// First, update pod set
-	klog.Infof("num pods in data structure: %d", p.numPods)
-	klog.Infof("current actual ready pods: %d", len(readyPods))
+	klog.V(5).Infof("num pods in data structure: %d", p.numPods)
+	klog.V(5).Infof("current actual ready pods: %d", len(readyPods))
 	p.updatePodSet(readyPods)
-	klog.Infof("num pods in data structure after updatePodSet: %d", p.numPods)
+	klog.V(5).Infof("num pods in data structure after updatePodSet: %d", p.numPods)
 	trimmedMessage := utils.TrimMessage(routingCtx.Message)
-	klog.Infof("Trimmed message: '%s'", trimmedMessage)
+	klog.V(5).Infof("Trimmed message: '%s'", trimmedMessage)
 	tokens, err := utils.TokenizeInputText(trimmedMessage)
 	if err != nil {
 		return "", err
 	}
-	klog.Info("AddPrefix to the tree: ", tokens)
+	klog.V(5).Info("AddPrefix to the tree: ", tokens)
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, routingCtx.Model, "")
 	var matchedPods []*v1.Pod
 	var matchedPodsNames []string
 	if modelPods, ok := node.GetModelToPods()[routingCtx.Model]; ok {
-		klog.Infof("node.ModelToPods[model]: %v", modelPods)
+		klog.V(5).Infof("node.ModelToPods[model]: %v", modelPods)
 		for podName := range modelPods {
 			for _, pod := range readyPods {
 				if pod.Name == podName {
@@ -537,7 +537,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 				klog.Errorf("DetokenizeTexts failed: %s, tokens: '%v', matchedTokens: '%v', model: %s", err, tokenInString, matchedTokensInString, routingCtx.Model)
 			} else {
 				klog.Infof("No matched pods found for tokens: '%v', matchedTokens: '%v', model: %s", tokenInString, matchedTokensInString, routingCtx.Model)
-				klog.Infof("Go to cost model based routing!")
 			}
 		}
 	}
