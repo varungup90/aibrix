@@ -25,8 +25,8 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
     target_pod = ""
     try:
         logging.info(f"Request {request_id}: Starting streaming request to {endpoint}")
-        extra_headers={"routing-strategy": "prefix-cache-and-load"}
-        # extra_headers={"routing-strategy": "random"}
+        # extra_headers={"routing-strategy": "prefix-cache-and-load"}
+        extra_headers={"routing-strategy": "random"}
         response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
