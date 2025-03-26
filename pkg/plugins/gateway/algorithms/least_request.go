@@ -54,8 +54,6 @@ func NewLeastRequestRouter() (Router, error) {
 }
 
 func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
-	var targetPodIP string
-	minCount := math.MaxFloat64
 
 	if len(pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
@@ -66,32 +64,7 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 		return "", fmt.Errorf("no ready pods available for fallback")
 	}
 
-	for _, pod := range readyPods {
-		runningReq, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.NumRequestsRunning)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		waitingReq, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.NumRequestsWaiting)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-		swappedReq, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.NumRequestsSwapped)
-		if err != nil {
-			klog.Error(err)
-			continue
-		}
-
-		totalReq := runningReq.GetSimpleValue() + waitingReq.GetSimpleValue() + swappedReq.GetSimpleValue()
-		klog.V(4).Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
-			pod.Name, pod.Status.PodIP, runningReq, waitingReq, swappedReq, totalReq)
-
-		if totalReq <= minCount {
-			minCount = totalReq
-			targetPodIP = pod.Status.PodIP
-		}
-	}
+	targetPodIP := selectTargetPodWithLeastRequestCount(r.cache, routingCtx.Model, readyPods)
 
 	// Use fallback if no valid metrics
 	if targetPodIP == "" {
@@ -116,4 +89,45 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 		metrics.NumRequestsWaiting,
 		metrics.NumRequestsSwapped,
 	}
+}
+
+func selectTargetPodWithLeastRequestCount(cache cache.Cache, modelname string, readyPods []*v1.Pod) string {
+	var targetPodIP string
+	minCount := math.MaxFloat64
+
+	podRequestCount := getRequestCounts(cache, modelname, readyPods)
+	for podname, totalReq := range podRequestCount {
+		if totalReq <= minCount {
+			minCount = totalReq
+			targetPodIP = podname
+		}
+		klog.V(4).InfoS("total request count", "model", modelname, "pod", podname, "totalReq", totalReq)
+	}
+
+	return targetPodIP
+}
+
+func getRequestCounts(cache cache.Cache, modelname string, readyPods []*v1.Pod) map[string]float64 {
+	podRequestCount := map[string]float64{}
+	for _, pod := range readyPods {
+		podname := pod.Status.PodIP
+		runningReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsRunning)
+		if err != nil {
+			runningReq = &metrics.SimpleMetricValue{Value: 0}
+			klog.V(3).InfoS("no running request count", "pod", podname, "model", modelname)
+		}
+		waitingReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsWaiting)
+		if err != nil {
+			waitingReq = &metrics.SimpleMetricValue{Value: 0}
+			klog.V(3).InfoS("no waiting request count", "pod", podname, "model", modelname)
+		}
+		swappedReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsSwapped)
+		if err != nil {
+			swappedReq = &metrics.SimpleMetricValue{Value: 0}
+			klog.V(3).InfoS("no swapped request count", "pod", podname, "model", modelname)
+		}
+		podRequestCount[podname] = runningReq.GetSimpleValue() + waitingReq.GetSimpleValue() + swappedReq.GetSimpleValue()
+	}
+
+	return podRequestCount
 }

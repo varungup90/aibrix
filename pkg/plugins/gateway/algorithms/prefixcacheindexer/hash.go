@@ -24,14 +24,14 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 const (
-	defaultPrefixCacheBlockSize              = 16
+	defaultPrefixCacheBlockSize              = 4
 	defaultPrefixCacheEvictionInternalInMS   = 50
 	defaultPrefixCacheEvictionDurationInMins = 60
+	defaultPrefixSearch                      = "seq"
 )
 
 var (
@@ -39,6 +39,7 @@ var (
 	prefixCacheBlockSize        = getPrefixCacheBlockSize()
 	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
 	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
+	prefixSearch                = "seq"
 )
 
 func getPrefixCacheBlockSize() int {
@@ -89,7 +90,6 @@ func getPrefixCacheEvictionDuration() time.Duration {
 type PrefixHashTable struct {
 	mu     sync.RWMutex
 	blocks map[uint64]Block
-	hash   *xxhash.Digest
 	seed   uint64
 }
 
@@ -98,12 +98,11 @@ type Block struct {
 	lastAccessTime time.Time                       // block_last_access_time
 }
 
-func NewPrefixHashTable() PrefixCacheIndexer {
+func NewPrefixHashTable() *PrefixHashTable {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	seed := r.Uint64()
 	instance := &PrefixHashTable{
 		blocks: map[uint64]Block{},
-		hash:   xxhash.NewWithSeed(seed),
 		seed:   seed,
 	}
 
@@ -117,60 +116,69 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 	return instance
 }
 
-// returns matchedTokens, unMatchedTokens, matchedPods
-func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
+// MatchPrefix matches the input token prefix's if already cached
+// returns pods on which prefix is cached and prefix hashes for unmatched suffix
+func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+
+	prefixHashes := getPrefixHashes(c.seed, tokens)
+	if prefixSearch == defaultPrefixSearch {
+		return c.seqSearchPrefix(prefixHashes, model, readyPods)
+	} else {
+		return c.binarySearchPrefix(prefixHashes, model, readyPods)
+	}
+}
+
+func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	// podname -> %prefixmatch
+	prefixMatchPods := map[string]int{}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var block, lastMatchedBlock Block
-	var ok bool
-	var lastTokenMatchIndex int
-
-	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
-		end := i + prefixCacheBlockSize
-		if end > len(tokens) {
-			end = len(tokens)
-		}
-
-		_, _ = c.hash.Write(tokens[i:end])
-		prefixHash := c.hash.Sum64()
-		c.hash.ResetWithSeed(c.seed)
-
-		block, ok = c.blocks[prefixHash]
-		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
-			lastTokenMatchIndex = i
+	for i := 0; i < len(prefixHashes); i++ {
+		prefixHash := prefixHashes[i]
+		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+		block, ok := c.blocks[prefixHash]
+		if !ok || len(block.modelToPods[model]) == 0 ||
+			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
 
-		lastTokenMatchIndex = end
-		lastMatchedBlock = block
 		block.lastAccessTime = time.Now()
 		c.blocks[prefixHash] = block
 	}
-
-	matchedTokens := tokens[0:lastTokenMatchIndex]
-	unMatchedTokens := tokens[lastTokenMatchIndex:]
-
-	var matchedPods []*v1.Pod
-	if len(matchedTokens) > 0 {
-		matchedPods = matchPods(lastMatchedBlock.modelToPods[model], pods)
-	}
-
-	return matchedTokens, unMatchedTokens, matchedPods
+	return prefixMatchPods, prefixHashes
 }
 
-func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
+func (c *PrefixHashTable) binarySearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	low, mid, high := 0, 0, len(prefixHashes)-1
+	prefixMatchPods := map[string]int{}
+
+	for low <= high {
+		mid = (low + high) / 2
+		prefixHash := prefixHashes[mid]
+		prefixMatchPercent := (mid + 1) * 100 / len(prefixHashes)
+
+		c.mu.RLock()
+		block, ok := c.blocks[prefixHash]
+		c.mu.RUnlock()
+		if ok && len(block.modelToPods[model]) != 0 &&
+			matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+
+	return prefixMatchPods, prefixHashes
+}
+
+// AddPrefix adds the unmatched input tokens to cache for future reference
+func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := 0; i < len(unMatchedTokens); i += prefixCacheBlockSize {
-		end := i + prefixCacheBlockSize
-		if end > len(unMatchedTokens) {
-			end = len(unMatchedTokens)
-		}
+	for i := 0; i < len(prefixHashes); i++ {
+		prefixHash := prefixHashes[i]
 
-		_, _ = c.hash.Write(unMatchedTokens[i:end])
-		prefixHash := c.hash.Sum64()
-		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.blocks[prefixHash]
 		if !ok {
 			block = Block{
@@ -207,12 +215,38 @@ func (c *PrefixHashTable) Evict(now time.Time) {
 }
 
 // matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
-func matchPods(blockPods map[string]time.Time, readyPods []*v1.Pod) []*v1.Pod {
-	var matchedPods []*v1.Pod
-	for _, pod := range readyPods {
-		if _, ok := blockPods[pod.Name]; ok {
-			matchedPods = append(matchedPods, pod)
+func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int) bool {
+	var isMatch bool
+	for pod := range readyPods {
+		if _, ok := blockPods[pod]; ok {
+			prefixMatchPods[pod] = prefixMatchPercent
+			isMatch = true
+		} else {
+			delete(readyPods, pod)
 		}
 	}
-	return matchedPods
+
+	return isMatch
+}
+
+func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
+	prevPrefixHash := ""
+	prefixHashes := []uint64{}
+	digest := xxhash.NewWithSeed(seed)
+	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(tokens) {
+			break
+		}
+
+		_, _ = digest.Write([]byte(prevPrefixHash))
+		_, _ = digest.Write(tokens[i:end])
+
+		currHash := digest.Sum64()
+		prefixHashes = append(prefixHashes, currHash)
+		digest.ResetWithSeed(seed)
+
+	}
+
+	return prefixHashes
 }
