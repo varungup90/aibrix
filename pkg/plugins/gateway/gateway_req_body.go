@@ -31,7 +31,7 @@ import (
 )
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, string, bool, int64) {
-	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
+	// klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model, targetPodIP string
 	var ok, stream bool
 	var term int64 // Identify the trace window
@@ -95,7 +95,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		if extErr != nil {
 			return extErr, model, targetPodIP, stream, term
 		}
-		routingCtx := routing.RoutingContext{Model: model, Message: message}
+		routingCtx := routing.RoutingContext{Model: model, Message: message, RequestID: requestID}
 		targetPodIP, err = s.selectTargetPod(ctx, routing.Algorithms(routingStrategy), pods, routingCtx)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
@@ -125,6 +125,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	if enableGPUOptimizerTracing {
 		term = s.cache.AddRequestCount(requestID, model)
 	}
+	s.cache.AddRunningRequest(targetPodIP)
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{

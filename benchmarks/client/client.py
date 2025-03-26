@@ -150,9 +150,11 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
 # Asynchronous request handler
 async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
+                             endpoint: str,
                              prompt: str,
                              output_file: str,
                              request_id: int):
+    logging.info(f"Request {request_id}: Starting streaming request to {endpoint}")
     start_time = asyncio.get_event_loop().time()
     target_pod = ""
     try:
@@ -222,6 +224,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
                           output_file: io.TextIOWrapper,
                           model: str,
                           ):
+    print(endpoint)
     request_id = 0
     batch_tasks = []
     base_time = time.time()
@@ -240,7 +243,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
                 send_request_batch(client = client,
                                    model = model,
                                    endpoint = endpoint,
-                                   formatted_prompt = formatted_prompts[i],
+                                   prompt = formatted_prompts[i],
                                    output_file = output_file,
                                    request_id = request_id)
             )

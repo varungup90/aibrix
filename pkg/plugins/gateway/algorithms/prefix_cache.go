@@ -39,29 +39,6 @@ func init() {
 	Register(RouterPrefixCache, func() (Router, error) { return router, err })
 }
 
-// const (
-// 	defaultPrefixCacheMatchThresholdPercent = 50
-// )
-
-// var (
-// 	prefixCacheMatchThresholdPercent = getPrefixCacheMatchThresholdPercent()
-// )
-
-// func getPrefixCacheMatchThresholdPercent() int {
-// 	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT", "")
-// 	if value != "" {
-// 		intValue, err := strconv.Atoi(value)
-// 		if err != nil || intValue <= 0 || intValue > 100 {
-// 			klog.Infof("invalid AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT: %s, valid value between 0 and 100, failing back to default", value)
-// 		} else {
-// 			klog.Infof("using AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT env value for prefix cache match threshold percent: %d", intValue)
-// 			return intValue
-// 		}
-// 	}
-// 	klog.Infof("using default prefix cache match threshold percent: %d", defaultPrefixCacheMatchThresholdPercent)
-// 	return defaultPrefixCacheMatchThresholdPercent
-// }
-
 type prefixCacheRouter struct {
 	cache              cache.Cache
 	tokenizer          tokenizer.Tokenizer
@@ -79,21 +56,33 @@ func NewPrefixCacheRouter() (Router, error) {
 		tokenizerObj = tokenizer.NewCharacterTokenizer()
 	}
 
-	c, err := cache.Get()
-	if err != nil {
-		return nil, err
-	}
+	// c, err := cache.Get()
+	// if err != nil {
+	// 	fmt.Println("fail to get cache in prefix cache router")
+	// 	return nil, err
+	// }
 
 	return prefixCacheRouter{
-		cache:              c,
+		// cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
 
 func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+	c, err := cache.Get()
+	if err != nil {
+		fmt.Println("fail to get cache in prefix cache router")
+		return "nil", err
+	}
+	p.cache = c
+
 	var targetPod string
-	tokens, err := p.tokenizer.TokenizeInputText(routingCtx.Message)
+	trimMessage := utils.TrimMessage(routingCtx.Message)
+	// klog.InfoS("prefix_cache_trim_message",
+	// 	"request_id", routingCtx.RequestID,
+	// 	"trim_message", trimMessage)
+	tokens, err := p.tokenizer.TokenizeInputText(trimMessage)
 	if err != nil {
 		return "", err
 	}
@@ -110,60 +99,95 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, r
 	for _, pod := range filterReadyPods {
 		readyPods[pod.Status.PodIP] = struct{}{}
 	}
+	// var readyPodNames []string
+	// for pod := range readyPods {
+	// 	readyPodNames = append(readyPodNames, pod)
+	// }
 
-	matchedPods, unMatchedPrefixHashes := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPods)
+	var unMatchedPrefixHashes []uint64
+	var matchedPods map[string]int
+	b, value := isLoadImbalanced(p.cache, filterReadyPods)
+	if b {
+		targetPod = value
+		klog.InfoS("prefix_cache_load_imbalanced",
+			"target_pod", targetPod,
+			"request_id", routingCtx.RequestID)
+		unMatchedPrefixHashes = p.prefixCacheIndexer.GetPrefixHashes(tokens)
+		p.prefixCacheIndexer.AddPrefix(unMatchedPrefixHashes, routingCtx.Model, targetPod)
+		return getPodAddress(value)
+	}
+
+	matchedPods, unMatchedPrefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPods)
+	klog.InfoS("prefix_hashes",
+		"request_id", routingCtx.RequestID,
+		"prefix_hashes", unMatchedPrefixHashes)
 
 	if len(matchedPods) > 0 {
-		podRequestCount := getRequestCounts(p.cache, routingCtx.Model, filterReadyPods)
-		requestCount := []float64{}
-		for _, cnt := range podRequestCount {
-			requestCount = append(requestCount, cnt)
-		}
-		meanRequestCount := mean(requestCount)
-		stdDevRequestCount := standardDeviation(requestCount)
-
-		podnames := []string{}
-		for podname := range matchedPods {
-			podnames = append(podnames, podname)
-		}
-
-		// sort pods with decreasing %perfixmatch
-		sort.SliceStable(podnames, func(i, j int) bool {
-			return matchedPods[podnames[i]] > matchedPods[podnames[j]]
-		})
-
-		// select targetpod with highest %prefixmatch and within stddev
-		for _, podname := range podnames {
-			reqCnt := podRequestCount[podname]
-			if reqCnt <= meanRequestCount+stdDevRequestCount {
-				targetPod = podname
-				break
-			}
-		}
+		podRequestCount := getRequestCounts(p.cache, filterReadyPods)
+		targetPod = getTargetPodFromMatchedPods(podRequestCount, matchedPods)
+		klog.InfoS("prefix_cache_matched_pods",
+			"matched_pods", matchedPods,
+			"target_pod", targetPod,
+			// "ready_pods", readyPodNames,
+			"pod_request_count", podRequestCount,
+			"request_id", routingCtx.RequestID)
 	}
 
 	if len(matchedPods) == 0 || targetPod == "" {
 		// no pod with prefix match, select pod with least request count
 		targetPod = selectTargetPodWithLeastRequestCount(p.cache, routingCtx.Model, filterReadyPods)
+		klog.InfoS("prefix_cache_no_matched_pods",
+			"matched_pods", matchedPods,
+			// "ready_pods", readyPodNames,
+			"target_pod", targetPod,
+			"request_id", routingCtx.RequestID)
 	}
 
 	if len(unMatchedPrefixHashes) > 0 {
 		p.prefixCacheIndexer.AddPrefix(unMatchedPrefixHashes, routingCtx.Model, targetPod)
 	}
 
-	var matchedPodNames, readyPodNames []string
-	for pod := range matchedPods {
-		matchedPodNames = append(matchedPodNames, pod)
-	}
-	for pod := range readyPods {
-		readyPodNames = append(readyPodNames, pod)
-	}
-	klog.V(4).InfoS("prefix cache route",
-		"matched_pods", matchedPodNames,
-		"ready_pods", readyPodNames,
-		"target_pod", targetPod)
-
 	return getPodAddress(targetPod)
+}
+
+func getTargetPodFromMatchedPods(podRequestCount, matchedPods map[string]int) string {
+	var targetPod string
+	requestCount := []float64{}
+	for _, cnt := range podRequestCount {
+		requestCount = append(requestCount, float64(cnt))
+	}
+	meanRequestCount := mean(requestCount)
+	stdDevRequestCount := standardDeviation(requestCount)
+
+	podnames := []string{}
+	for podname := range matchedPods {
+		podnames = append(podnames, podname)
+	}
+
+	// sort pods with decreasing %perfixmatch, for same match sort increasing request count
+	sort.SliceStable(podnames, func(i, j int) bool {
+		if matchedPods[podnames[i]] == matchedPods[podnames[j]] {
+			return podRequestCount[podnames[i]] < podRequestCount[podnames[j]]
+		}
+		return matchedPods[podnames[i]] > matchedPods[podnames[j]]
+	})
+
+	// fmt.Println("Sorted map by value:")
+	// for _, podname := range podnames {
+	// 	fmt.Printf("%s: %d -- %d\n", podname, matchedPods[podname], podRequestCount[podname])
+	// }
+
+	// klog.InfoS("-", "mean", meanRequestCount, "std_dev", stdDevRequestCount)
+
+	// select targetpod with highest %prefixmatch and within stddev
+	for _, podname := range podnames {
+		reqCnt := float64(podRequestCount[podname])
+		if reqCnt <= meanRequestCount+stdDevRequestCount {
+			targetPod = podname
+			break
+		}
+	}
+	return targetPod
 }
 
 // mean calculates the mean of a slice of float64 numbers.

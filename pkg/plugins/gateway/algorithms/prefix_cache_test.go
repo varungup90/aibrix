@@ -215,3 +215,30 @@ func incrCount(cnt float64) map[string]map[string]metrics.MetricValue {
 		},
 	}
 }
+
+func Test_test(t *testing.T) {
+	podRequestCount := map[string]int{
+		"192.168.100.10": 10,
+		"192.168.100.11": 14,
+		"192.168.100.12": 13,
+		"192.168.100.14": 15,
+		"192.168.100.15": 12,
+		"192.168.100.17": 10,
+		"192.168.100.19": 7,
+		"192.168.100.20": 15,
+	}
+
+	matchedPods := map[string]int{
+		"192.168.100.10": 3,
+		"192.168.100.11": 3,
+		"192.168.100.12": 3,
+		"192.168.100.14": 3,
+		"192.168.100.15": 3,
+		// "192.168.100.17": 3,
+		"192.168.100.19": 3,
+		"192.168.100.20": 100,
+	}
+
+	fmt.Println(getTargetPodFromMatchedPods(podRequestCount, matchedPods))
+	assert.Equal(t, 1, 0)
+}

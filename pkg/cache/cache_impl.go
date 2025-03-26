@@ -283,3 +283,42 @@ func (c *Store) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	c.subscribers = append(c.subscribers, subscriber)
 	c.aggregateMetrics()
 }
+
+func (c *Store) GetRunningRequest(podname string) int32 {
+	// klog.InfoS("get_running_request", "podname", podname)
+	val, ok := c.runningRequests.Load(podname)
+	if !ok {
+		return 0
+	}
+	// klog.InfoS("get_running_request",
+	// 	"podname", podname,
+	// 	"value", atomic.LoadInt32(val.(*int32)))
+	return atomic.LoadInt32(val.(*int32))
+}
+
+func (c *Store) AddRunningRequest(podname string) {
+	newRunningCounter := int32(0)
+	runningCounter, _ := c.runningRequests.LoadOrStore(podname, &newRunningCounter)
+	atomic.AddInt32(runningCounter.(*int32), 1)
+
+	// klog.InfoS("add_running_request",
+	// 	"podname", podname,
+	// 	"value", c.GetRunningRequest(podname))
+}
+
+func (c *Store) DoneRunningRequest(podname string) {
+	runningCounter, ok := c.runningRequests.Load(podname)
+	if ok {
+		atomic.AddInt32(runningCounter.(*int32), -1)
+	}
+
+	// val, ok := c.runningRequests.Load(podname)
+	// if !ok {
+	// 	klog.InfoS("done_running_requests_value_not_found")
+	// 	return
+	// }
+
+	// klog.InfoS("done_running_request",
+	// 	"podname", podname,
+	// 	"value", atomic.LoadInt32(val.(*int32)))
+}

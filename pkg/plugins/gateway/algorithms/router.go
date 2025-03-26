@@ -30,6 +30,8 @@ type RoutingContext struct {
 	Model   string
 	Message string
 	// Additional fields can be added here to expand the routing context.
+
+	RequestID string
 }
 
 // Router defines the interface for routing logic to select target pods.

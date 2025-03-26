@@ -93,9 +93,9 @@ func (r *leastRequestRouter) SubscribedMetrics() []string {
 
 func selectTargetPodWithLeastRequestCount(cache cache.Cache, modelname string, readyPods []*v1.Pod) string {
 	var targetPodIP string
-	minCount := math.MaxFloat64
+	minCount := math.MaxInt32
 
-	podRequestCount := getRequestCounts(cache, modelname, readyPods)
+	podRequestCount := getRequestCounts(cache, readyPods)
 	for podname, totalReq := range podRequestCount {
 		if totalReq <= minCount {
 			minCount = totalReq
@@ -107,27 +107,36 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, modelname string, r
 	return targetPodIP
 }
 
-func getRequestCounts(cache cache.Cache, modelname string, readyPods []*v1.Pod) map[string]float64 {
-	podRequestCount := map[string]float64{}
+func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
-		podname := pod.Status.PodIP
-		runningReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsRunning)
-		if err != nil {
-			runningReq = &metrics.SimpleMetricValue{Value: 0}
-			klog.V(3).InfoS("no running request count", "pod", podname, "model", modelname)
-		}
-		waitingReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsWaiting)
-		if err != nil {
-			waitingReq = &metrics.SimpleMetricValue{Value: 0}
-			klog.V(3).InfoS("no waiting request count", "pod", podname, "model", modelname)
-		}
-		swappedReq, err := cache.GetMetricValueByPodModel(podname, modelname, metrics.NumRequestsSwapped)
-		if err != nil {
-			swappedReq = &metrics.SimpleMetricValue{Value: 0}
-			klog.V(3).InfoS("no swapped request count", "pod", podname, "model", modelname)
-		}
-		podRequestCount[podname] = runningReq.GetSimpleValue() + waitingReq.GetSimpleValue() + swappedReq.GetSimpleValue()
+		podname, _ := getPodAddress(pod.Status.PodIP)
+		podRequestCount[pod.Status.PodIP] = int(cache.GetRunningRequest(podname))
 	}
 
 	return podRequestCount
+}
+
+func isLoadImbalanced(cache cache.Cache, readyPods []*v1.Pod) (bool, string) {
+	podRequestCount := getRequestCounts(cache, readyPods)
+
+	minValue := math.MaxInt32
+	maxValue := math.MinInt32
+	var minTargetPod string
+
+	for podname, value := range podRequestCount {
+		if value < minValue {
+			minValue = value
+			minTargetPod = podname
+		}
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+
+	if maxValue-minValue > 8 {
+		return true, minTargetPod
+	}
+
+	return false, ""
 }

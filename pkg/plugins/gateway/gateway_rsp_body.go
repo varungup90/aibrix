@@ -36,7 +36,7 @@ import (
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfStream", b.ResponseBody.EndOfStream)
+	// klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfStream", b.ResponseBody.EndOfStream)
 
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -45,9 +45,17 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	complete := hasCompleted
 
 	defer func() {
+		if !hasCompleted && complete {
+			// klog.ErrorS(nil, "done_running_request_rsp_body_error", "request_id", requestID)
+			s.cache.DoneRunningRequest(targetPodIP)
+		}
+
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if enableGPUOptimizerTracing && !hasCompleted && complete && b.ResponseBody.EndOfStream {
-			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
+			s.cache.DoneRunningRequest(targetPodIP) // for success scenario
+			if enableGPUOptimizerTracing {
+				s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+			}
 		}
 	}()
 

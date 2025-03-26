@@ -20,14 +20,19 @@ import (
 	"context"
 	"strconv"
 
-	"k8s.io/klog/v2"
-
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 )
 
 func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) (*extProcPb.ProcessingResponse, bool, int) {
-	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+	// klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+	var isProcessingError bool
+	var processingErrorCode int
+	defer func() {
+		if isProcessingError {
+			s.cache.DoneRunningRequest(targetPodIP)
+		}
+	}()
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
 	headers := []*configPb.HeaderValueOption{{
@@ -45,8 +50,6 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 		})
 	}
 
-	var isProcessingError bool
-	var processingErrorCode int
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
 		if headerValue.Key == ":status" {
 			code, _ := strconv.Atoi(string(headerValue.RawValue))

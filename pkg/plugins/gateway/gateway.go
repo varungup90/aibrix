@@ -88,7 +88,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	requestID := uuid.New().String()
 	completed := false
 
-	klog.InfoS("Processing request", "requestID", requestID)
+	klog.InfoS("processing request", "requestID", requestID)
 
 	for {
 		select {
@@ -130,7 +130,10 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 
 		if err := srv.Send(resp); err != nil {
-			klog.Infof("send error %v", err)
+			if targetPodIP != "" {
+				s.cache.DoneRunningRequest(targetPodIP)
+			}
+			klog.ErrorS(err, "requestID", requestID)
 		}
 	}
 }

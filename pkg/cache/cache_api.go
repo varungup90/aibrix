@@ -112,6 +112,12 @@ type MetricCache interface {
 	//   traceTerm: Trace term identifier
 	DoneRequestCount(requestID string, modelName string, traceTerm int64)
 
+	GetRunningRequest(targetPodIP string) int32
+
+	AddRunningRequest(targetPodIP string)
+
+	DoneRunningRequest(targetPodIP string)
+
 	// AddSubscriber adds a metric subscriber
 	// Parameters:
 	//   subscriber: Metric subscriber implementation

@@ -74,7 +74,7 @@ metadata:
     environment: router
     release: router
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   ports:
     - name: "router-sport"
       port: 80

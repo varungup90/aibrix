@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	defaultPrefixCacheBlockSize              = 4
+	defaultPrefixCacheBlockSize              = 1024
 	defaultPrefixCacheEvictionInternalInMS   = 50
 	defaultPrefixCacheEvictionDurationInMins = 60
 	defaultPrefixSearch                      = "seq"
@@ -39,7 +39,7 @@ var (
 	prefixCacheBlockSize        = getPrefixCacheBlockSize()
 	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
 	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
-	prefixSearch                = "seq"
+	prefixSearch                = utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SEARCH", "seq")
 )
 
 func getPrefixCacheBlockSize() int {
@@ -119,7 +119,6 @@ func NewPrefixHashTable() *PrefixHashTable {
 // MatchPrefix matches the input token prefix's if already cached
 // returns pods on which prefix is cached and prefix hashes for unmatched suffix
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
-
 	prefixHashes := getPrefixHashes(c.seed, tokens)
 	if prefixSearch == defaultPrefixSearch {
 		return c.seqSearchPrefix(prefixHashes, model, readyPods)
@@ -131,19 +130,18 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map
 func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	// podname -> %prefixmatch
 	prefixMatchPods := map[string]int{}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+
+		c.mu.RLock()
 		block, ok := c.blocks[prefixHash]
+		c.mu.RUnlock()
+
 		if !ok || len(block.modelToPods[model]) == 0 ||
 			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
-
-		block.lastAccessTime = time.Now()
-		c.blocks[prefixHash] = block
 	}
 	return prefixMatchPods, prefixHashes
 }
@@ -245,8 +243,11 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 		currHash := digest.Sum64()
 		prefixHashes = append(prefixHashes, currHash)
 		digest.ResetWithSeed(seed)
-
 	}
 
 	return prefixHashes
+}
+
+func (c *PrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
+	return getPrefixHashes(c.seed, tokens)
 }

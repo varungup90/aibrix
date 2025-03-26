@@ -18,6 +18,7 @@ package cache
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,7 @@ type Store struct {
 	metrics           map[string]any             // Generic metric storage
 	requestTrace      *sync.Map                  // Request trace data (model_name: RequestTrace)
 	pendingRequests   *sync.Map                  // In-progress request records
+	runningRequests   *sync.Map                  // In-progress request records
 	numRequestsTraces int32                      // Request trace counter
 
 	// Pod related storage
@@ -88,6 +90,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 		prometheusApi:   prometheusApi,
 		requestTrace:    &sync.Map{},
 		pendingRequests: &sync.Map{},
+		runningRequests: &sync.Map{},
 
 		// Initialize storage maps
 		Pods:              make(map[string]*v1.Pod),
@@ -109,6 +112,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 //
 //	*Store: Pointer to initialized store instance
 func Init(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
+	fmt.Println("cache initialization")
 	once.Do(func() {
 		store = New(redisClient, initPrometheusAPI())
 
