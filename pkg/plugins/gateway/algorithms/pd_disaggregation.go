@@ -21,9 +21,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -62,6 +66,26 @@ type pdRouter struct {
 	cache              cache.Cache
 	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	// New: Dedicated prefill request tracking
+	prefillRequestTracker *PrefillRequestTracker
+}
+
+// PrefillRequestTracker manages prefill-specific request counts
+type PrefillRequestTracker struct {
+	// Map of pod name -> active prefill request count
+	podRequestCounts sync.Map // map[string]*int32
+	// Map of request ID -> pod name for cleanup
+	requestToPod sync.Map // map[string]string
+	mu           sync.RWMutex
+}
+
+// PrefillRequestInfo tracks individual prefill request details
+type PrefillRequestInfo struct {
+	RequestID string
+	PodName   string
+	StartTime time.Time
+	LLMEngine string
+	Status    string // "active", "completed", "failed"
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -78,11 +102,20 @@ func NewPDRouter() (types.Router, error) {
 		return nil, err
 	}
 
-	return pdRouter{
-		cache:              c,
-		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	return &pdRouter{
+		cache:                 c,
+		tokenizer:             tokenizerObj,
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
 	}, nil
+}
+
+// NewPrefillRequestTracker creates a new prefill request tracker
+func NewPrefillRequestTracker() *PrefillRequestTracker {
+	return &PrefillRequestTracker{
+		podRequestCounts: sync.Map{},
+		requestToPod:     sync.Map{},
+	}
 }
 
 func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -132,29 +165,6 @@ func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v
 	return prefillPods, decodePods, nil
 }
 
-func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []*v1.Pod) (*v1.Pod, []uint64, error) {
-	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	readyPodsMap := map[string]struct{}{}
-	for _, pod := range prefillPods {
-		readyPodsMap[pod.Name] = struct{}{}
-	}
-	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-
-	var prefillPod *v1.Pod
-	if len(matchedPods) > 0 {
-		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
-	}
-	if prefillPod == nil {
-		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
-	}
-
-	return prefillPod, prefixHashes, err
-}
-
 func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
 	prefillRoleSet, ok := prefillPod.Labels[PDRoleSetIdentifier]
 	if !ok {
@@ -176,10 +186,15 @@ func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1
 }
 
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) (*v1.Pod, error) {
-	prefillPod, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
+	prefillCounts := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
+	prefillPod, prefixHashes, err := r.evaluatePrefixCacheWithCounts(routingCtx, prefillPods, prefillCounts)
 	if err != nil {
 		return nil, err
 	}
+
+	// Track the prefill request start
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
+
 	defer func() {
 		if len(prefixHashes) > 0 {
 			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, prefillPod.Name)
@@ -189,6 +204,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
 	if err != nil {
+		// Remove tracking on error
+		r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 		return nil, fmt.Errorf("failed to prepare prefill payload: %w", err)
 	}
 
@@ -201,21 +218,29 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	klog.InfoS("start_prefill_request",
 		"request_id", routingCtx.RequestID,
 		"llm_engine", llmEngine,
-		"prefill_url", apiURL)
+		"prefill_url", apiURL,
+		"prefill_pod", prefillPod.Name,
+		"prefill_count_before", prefillCounts[prefillPod.Name],
+		"all_prefill_counts", prefillCounts)
 
 	if llmEngine == SGLangEngine {
 		go func() {
+			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 			if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill request for sglang failed", "request_id", routingCtx.RequestID)
 				return
 			}
-			klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
+			klog.InfoS("prefill_request_complete",
+				"request_id", routingCtx.RequestID,
+				"prefill_pod", prefillPod.Name,
+				"prefill_time", time.Since(routingCtx.RequestTime))
 		}()
 	} else {
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 		if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
 		}
-		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
+		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP, "prefill_pod", prefillPod.Name)
 	}
 
 	return prefillPod, nil
@@ -304,4 +329,176 @@ func getSGLangBootstrapPort(pod *v1.Pod) int64 {
 		}
 	}
 	return SGLangBootstrapPort // Default port
+}
+
+func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
+	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+	count := countInterface.(*atomic.Int32)
+
+	// Increment counter
+	newCount := count.Add(1)
+
+	// Track request to pod mapping for cleanup
+	t.requestToPod.Store(requestID, podName)
+
+	klog.V(4).InfoS("prefill_request_added",
+		"request_id", requestID,
+		"pod_name", podName,
+		"new_count", newCount)
+}
+
+// RemovePrefillRequest decrements the prefill request count for a pod
+func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
+	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
+	if !exists {
+		klog.V(4).InfoS("prefill_request_not_found_for_removal", "request_id", requestID)
+		return
+	}
+
+	podName := podNameInterface.(string)
+	countInterface, exists := t.podRequestCounts.Load(podName)
+	if !exists {
+		klog.V(4).InfoS("pod_counter_not_found", "pod_name", podName, "request_id", requestID)
+		return
+	}
+
+	count := countInterface.(*atomic.Int32)
+	newCount := count.Add(-1)
+
+	// Ensure count doesn't go below zero
+	if newCount < 0 {
+		count.Store(0)
+		newCount = 0
+	}
+
+	klog.V(4).InfoS("prefill_request_removed",
+		"request_id", requestID,
+		"pod_name", podName,
+		"new_count", newCount)
+}
+
+// GetPrefillRequestCount returns the current prefill request count for a pod
+func (t *PrefillRequestTracker) GetPrefillRequestCount(podName string) int32 {
+	countInterface, exists := t.podRequestCounts.Load(podName)
+	if !exists {
+		return 0
+	}
+	return countInterface.(*atomic.Int32).Load()
+}
+
+// GetAllPrefillRequestCounts returns prefill request counts for all pods
+func (t *PrefillRequestTracker) GetAllPrefillRequestCounts() map[string]int32 {
+	counts := make(map[string]int32)
+	t.podRequestCounts.Range(func(key, value interface{}) bool {
+		podName := key.(string)
+		count := value.(*atomic.Int32).Load()
+		counts[podName] = count
+		return true
+	})
+	return counts
+}
+
+// GetPrefillRequestCountsForPods returns request counts for specific pods
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
+	counts := make(map[string]int32)
+	for _, pod := range pods {
+		counts[pod.Name] = t.GetPrefillRequestCount(pod.Name)
+	}
+	return counts
+}
+
+func (r *pdRouter) evaluatePrefixCacheWithCounts(ctx *types.RoutingContext, prefillPods []*v1.Pod, prefillCounts map[string]int32) (*v1.Pod, []uint64, error) {
+	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	readyPodsMap := map[string]struct{}{}
+	for _, pod := range prefillPods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
+
+	var prefillPod *v1.Pod
+	if len(matchedPods) > 0 {
+		prefillPod = r.getTargetPodFromMatchedPodsWithCounts(prefillPods, matchedPods, prefillCounts)
+		klog.InfoS("pd_cache_hit",
+			"request_id", ctx.RequestID,
+			"pod_name", prefillPod.Name,
+			"prefix_match_count", len(matchedPods))
+	}
+	if prefillPod == nil {
+		prefillPod = r.selectPodWithLeastPrefillRequests(prefillPods, prefillCounts)
+		klog.InfoS("pd_cache_miss",
+			"request_id", ctx.RequestID,
+			"pod_name", prefillPod.Name)
+	}
+	// if prefillPod == nil {
+	// 	prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
+	// }
+
+	return prefillPod, prefixHashes, err
+}
+
+// selectPodWithLeastPrefillRequests selects the pod with the least prefill requests
+func (r *pdRouter) selectPodWithLeastPrefillRequests(prefillPods []*v1.Pod, prefillCounts map[string]int32) *v1.Pod {
+	if len(prefillPods) == 0 {
+		return nil
+	}
+
+	var targetPod *v1.Pod
+	minCount := int32(math.MaxInt32)
+
+	for _, pod := range prefillPods {
+		count := prefillCounts[pod.Name]
+		if count < minCount {
+			minCount = count
+			targetPod = pod
+		}
+	}
+
+	klog.V(4).InfoS("selected_pod_with_least_prefill_requests",
+		"selected_pod", targetPod.Name,
+		"min_count", minCount,
+		"all_counts", prefillCounts)
+
+	return targetPod
+}
+
+// getTargetPodFromMatchedPodsWithCounts considers both prefix match and prefill load
+func (r *pdRouter) getTargetPodFromMatchedPodsWithCounts(prefillPods []*v1.Pod, matchedPods map[string]int, podRequestCount map[string]int32) *v1.Pod {
+	var targetPodName string
+	requestCount := []float64{}
+	for _, cnt := range podRequestCount {
+		requestCount = append(requestCount, float64(cnt))
+	}
+	meanRequestCount := mean(requestCount)
+	stdDevRequestCount := standardDeviation(requestCount)
+
+	podnames := []string{}
+	for podname := range matchedPods {
+		podnames = append(podnames, podname)
+	}
+	rand.Shuffle(len(podnames), func(i, j int) {
+		podnames[i], podnames[j] = podnames[j], podnames[i]
+	})
+
+	// sort pods with decreasing %perfixmatch AND for same %prefixmatch sort by increasing request count
+	sort.SliceStable(podnames, func(i, j int) bool {
+		if matchedPods[podnames[i]] == matchedPods[podnames[j]] {
+			return podRequestCount[podnames[i]] < podRequestCount[podnames[j]]
+		}
+		return matchedPods[podnames[i]] > matchedPods[podnames[j]]
+	})
+
+	// select targetpod with highest %prefixmatch and request_count within stddev
+	for _, podname := range podnames {
+		reqCnt := float64(podRequestCount[podname])
+		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+			targetPodName = podname
+			break
+		}
+	}
+	targetPod, _ := utils.FilterPodByName(targetPodName, prefillPods)
+	return targetPod
 }
