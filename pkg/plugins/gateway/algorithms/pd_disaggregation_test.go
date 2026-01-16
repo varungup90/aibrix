@@ -1259,7 +1259,7 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 				Model:     "test-model",
 			}
 
-			targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(ctx, tt.pods)
+			targetPod, _, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(ctx, tt.pods)
 
 			// Check target pod selection
 			if tt.expectTargetPod != "" {

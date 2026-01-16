@@ -217,11 +217,7 @@ build-controller-manager: manifests generate fmt vet ## Build controller-manager
 
 .PHONY: build-gateway-plugins
 build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binary with ZMQ.
-	CGO_ENABLED=1 \
-	CGO_LDFLAGS='-lzmq -lsodium -lpthread -lm -lstdc++' \
-	go build -tags="zmq" \
-		-ldflags='-extldflags "$(CGO_LDFLAGS)"' \
-		-o bin/gateway-plugins cmd/plugins/main.go
+	CGO_ENABLED=1 go build -tags="zmq" -o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-gateway-plugins-nozmq
 build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
@@ -243,7 +239,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
+	$(CONTAINER_TOOL) buildx build --platform linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
@@ -262,6 +258,7 @@ docker-build-controller-manager: ## Build docker image with the manager.
 
 .PHONY: docker-build-gateway-plugins
 docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/gateway-plugins cmd/plugins/main.go
 	$(call build_and_tag,gateway-plugins,Dockerfile.gateway)
 
 .PHONY: docker-build-runtime
