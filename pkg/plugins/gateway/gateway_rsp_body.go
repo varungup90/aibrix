@@ -154,7 +154,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
-		klog.Infof("request end, requestID: %s - %s, elapsed: %v", requestID, requestEnd,
+		klog.Infof("request end, requestID: %s - %s, totalTimeTaken: %v", requestID, requestEnd,
 			routerCtx.Elapsed(time.Now()))
 	} else if b.ResponseBody.EndOfStream {
 		complete = true

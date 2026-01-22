@@ -60,13 +60,16 @@ const (
 
 	defaultMaxRequest             float64 = 32
 	defaultMaxTokenThroughputDiff float64 = 2048
+
+	defaultTokenLengthAwareBucketing = 5000
 )
 
 var (
-	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
-	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
-	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
-	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
+	prefillRequestTimeout           int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	aibrixDecodeMaxRequest          float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
+	aibrixDecodeMaxThroughputDiff   float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	aibrixPromptLengthBucketing     bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
+	aibrixTokenLengthAwareBucketing int     = utils.LoadEnvInt("AIBRIX_TOKEN_LENGTH_AWARE_BUCKETING", defaultTokenLengthAwareBucketing)
 )
 
 func init() {
@@ -208,8 +211,9 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	if promptLength >= 8192 && len(combinedPods) > 0 {
-		klog.InfoS("prompt length is greater than 8192, selecting combined pod", "request_id", routingCtx.RequestID)
+	if promptLength >= aibrixTokenLengthAwareBucketing && len(combinedPods) > 0 {
+		klog.InfoS("prompt length is greater than token length aware bucketing, selecting combined pod",
+			"request_id", routingCtx.RequestID, "prompt_length", promptLength, "token_length_aware_bucketing", aibrixTokenLengthAwareBucketing)
 		return nil, combinedPods[rand.Intn(len(combinedPods))], nil
 	}
 
@@ -248,7 +252,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		if len(combinedPods) > 0 {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
-				klog.InfoS("load imbalance detected, selecting combined pod", "request_id", routingCtx.RequestID, "selected_combined_pod", combinedPod.Name)
+				klog.InfoS("load imbalance detected, selecting combined pod",
+					"request_id", routingCtx.RequestID, "selected_combined_pod", combinedPod.Name)
 				return nil, combinedPod, nil
 			}
 		}
@@ -304,6 +309,8 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 	minValue := int32(math.MaxInt32)
 	maxValue := int32(math.MinInt32)
 
+	cryptoShuffle(readyPods)
+
 	if len(podRequestCount) == 0 {
 		return targetPod, imbalance
 	}
@@ -348,6 +355,8 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	minFreeGPUUsage := float64(math.MaxFloat64)
 	maxFreeGPUUsage := float64(1)
 
+	cryptoShuffle(filteredDecodePods)
+
 	for _, pod := range filteredDecodePods {
 		runningReqs, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
@@ -385,8 +394,9 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
 	}
 
-	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
-		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
+	// minRequestCount == 0 ||
+	if maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+		klog.InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
@@ -429,6 +439,7 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	if err != nil {
 		return nil, 0, nil
 	}
+	cryptoShuffle(prefillPods)
 
 	var maxRequestCount float64 = 1
 	requestCount := []float64{}
@@ -489,6 +500,8 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64) (map[string]*Scores, float64) {
 	decodeScores := map[string]*Scores{}
 	maxDecodeScore := float64(0.01)
+
+	cryptoShuffle(filteredDecodePods)
 
 	for _, pod := range filteredDecodePods {
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
