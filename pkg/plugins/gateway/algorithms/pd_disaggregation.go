@@ -52,6 +52,7 @@ const (
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
 	PDRoleSetIdentifier           string                 = "roleset-name"
 	PDRoleIdentifier              string                 = "role-name"
+	CombinedIdentifier            string                 = "model.aibrix.ai/combined"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 	PromptMinLength               string                 = "prompt-min-length"
@@ -60,16 +61,13 @@ const (
 
 	defaultMaxRequest             float64 = 32
 	defaultMaxTokenThroughputDiff float64 = 2048
-
-	defaultTokenLengthAwareBucketing = 5000
 )
 
 var (
-	prefillRequestTimeout           int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
-	aibrixDecodeMaxRequest          float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
-	aibrixDecodeMaxThroughputDiff   float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
-	aibrixPromptLengthBucketing     bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
-	aibrixTokenLengthAwareBucketing int     = utils.LoadEnvInt("AIBRIX_TOKEN_LENGTH_AWARE_BUCKETING", defaultTokenLengthAwareBucketing)
+	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
+	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 )
 
 func init() {
@@ -169,8 +167,8 @@ type Scores struct {
 // only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
 // Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
-	prefillPods, decodePods, combinedPods := []*v1.Pod{}, []*v1.Pod{}, []*v1.Pod{}
-	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods := []*v1.Pod{}, []*v1.Pod{}
+	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
+	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods := []*v1.Pod{}, []*v1.Pod{}, []*v1.Pod{}
 
 	var promptLength int
 	if aibrixPromptLengthBucketing {
@@ -205,16 +203,11 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
 				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
 			}
-		case "combined":
-			// pods which can run prefill/decode roles
-			combinedPods = append(combinedPods, pod)
+		default:
+			if aibrixPromptLengthBucketing && isCombinedPod(pod) && r.isPodSuitableForPromptLength(pod, promptLength) {
+				promptLengthBucketingCombinedPods = append(promptLengthBucketingCombinedPods, pod)
+			}
 		}
-	}
-
-	if promptLength >= aibrixTokenLengthAwareBucketing && len(combinedPods) > 0 {
-		klog.InfoS("prompt length is greater than token length aware bucketing, selecting combined pod",
-			"request_id", routingCtx.RequestID, "prompt_length", promptLength, "token_length_aware_bucketing", aibrixTokenLengthAwareBucketing)
-		return nil, combinedPods[rand.Intn(len(combinedPods))], nil
 	}
 
 	// Override prefill pods only if bucketing produced results
@@ -224,6 +217,11 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 
 	if aibrixPromptLengthBucketing && len(promptLengthBucketingDecodePods) > 0 {
 		decodePods = promptLengthBucketingDecodePods
+	}
+
+	if aibrixPromptLengthBucketing && len(promptLengthBucketingCombinedPods) > 0 {
+		klog.InfoS("routing to combined pod", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
+		return nil, promptLengthBucketingCombinedPods[rand.Intn(len(promptLengthBucketingCombinedPods))], nil
 	}
 
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
@@ -249,8 +247,8 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 
 	// if load is high on prefill or decode roles, and low on combined pods then try to run requests on combined pods
 	if prefillIsImbalanced || decodeIsImbalanced {
-		if len(combinedPods) > 0 {
-			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
+		if len(promptLengthBucketingCombinedPods) > 0 {
+			combinedPod := r.scoreCombinedPods(routingCtx, promptLengthBucketingCombinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod",
 					"request_id", routingCtx.RequestID, "selected_combined_pod", combinedPod.Name)
@@ -883,6 +881,10 @@ func (r *pdRouter) getPodPromptRange(pod *v1.Pod) (int, int) {
 	}
 
 	return minLength, maxLength
+}
+
+func isCombinedPod(pod *v1.Pod) bool {
+	return pod != nil && pod.Labels[CombinedIdentifier] == "true"
 }
 
 func cryptoShuffle[T any](slice []T) {
