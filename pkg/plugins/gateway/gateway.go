@@ -101,6 +101,14 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	if redisClient != nil {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
+
+		// Register the gateway-level request tracker so each instance's
+		// in-flight count is synced to Redis, enabling cluster-wide totals.
+		syncer := ratelimiter.NewRedisRunningRequestSyncer(redisClient)
+		if initErr := syncer.Init(context.Background(), podName); initErr != nil {
+			klog.Warningf("failed to initialise gateway running request count in Redis: %v", initErr)
+		}
+		c.RegisterRequestTracker(newGatewayRequestTracker(podName, syncer))
 	} else {
 		r = ratelimiter.NewNoopRateLimiter()
 		mr = ratelimiter.NewNoopRateLimiter()
