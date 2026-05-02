@@ -17,13 +17,20 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
-from aibrix.batch.job_driver import EchoInferenceEngineClient
-from aibrix.batch.job_entity import BatchJobErrorCode, BatchJobState, BatchJobStatus
+from aibrix.batch.job_driver import EchoInferenceEngineClient, JobDriver
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobErrorCode,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+)
 from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
@@ -278,6 +285,46 @@ async def test_batch_driver_resuming():
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_execute_job_finalizes_job_with_existing_temp_files():
+    job = BatchJob.new_local(
+        BatchJobSpec.from_strings(
+            input_file_id="input-file-id",
+            endpoint="/v1/chat/completions",
+        ),
+        request_count=1,
+    )
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.output_file_id = "output-file-id"
+    job.status.error_file_id = "error-file-id"
+    job.status.temp_output_file_id = "temp-output-file-id"
+    job.status.temp_error_file_id = "temp-error-file-id"
+
+    progress_manager = AsyncMock()
+    progress_manager.get_job.return_value = job
+    progress_manager.mark_job_done.return_value = job
+
+    async def finish_job(_job_id):
+        job.status.state = BatchJobState.FINALIZING
+        return job
+
+    job_driver = JobDriver(progress_manager, EchoInferenceEngineClient())
+    with patch.object(
+        job_driver, "execute_worker", new=AsyncMock(side_effect=finish_job)
+    ), patch(
+        "aibrix.batch.job_driver.storage.prepare_job_ouput_files",
+        new_callable=AsyncMock,
+    ) as prepare_job_output_files, patch(
+        "aibrix.batch.job_driver.storage.finalize_job_output_data",
+        new_callable=AsyncMock,
+    ) as finalize_job_output_data:
+        await job_driver.execute_job(job.status.job_id)
+
+    prepare_job_output_files.assert_not_awaited()
+    finalize_job_output_data.assert_awaited_once_with(job)
+    progress_manager.mark_job_done.assert_awaited_once_with(job.status.job_id)
 
 
 @pytest.mark.asyncio

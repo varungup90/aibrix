@@ -193,7 +193,7 @@ class JobDriver:
             logger.warning("Job not found", job_id=job_id)
             return
 
-        # Check if temp file IDs exist to determine if we should skip steps 1 and 3
+        # Check if temp file IDs exist to determine if we should skip preparation.
         has_temp_files = (
             job.status.temp_output_file_id and job.status.temp_error_file_id
         )
@@ -228,8 +228,7 @@ class JobDriver:
 
         # Step 3: Aggregate outputs
         if job.status.state == BatchJobState.FINALIZING:
-            if not has_temp_files:
-                await storage.finalize_job_output_data(job)
+            await storage.finalize_job_output_data(job)
 
             logger.debug("Completed job", job_id=job_id)
             job = await self._sync_job_status(job_id)
