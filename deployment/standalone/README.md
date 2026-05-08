@@ -289,7 +289,7 @@ For developing and testing the gateway plugin locally without Docker:
 
 ### Prerequisites
 
-- Go 1.22+ (for building gateway-plugins)
+- Go 1.25+ (for building gateway-plugins)
 - Python 3.9+ (for mock vLLM server)
 - Envoy proxy installed (`brew install envoy` on macOS)
 - Redis running locally (`brew install redis && redis-server`)

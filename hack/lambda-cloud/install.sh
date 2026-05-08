@@ -10,8 +10,8 @@ sudo apt update && sudo apt install -y jq
 
 # Install Go
 echo "Installing Go..."
-wget https://go.dev/dl/go1.22.3.linux-amd64.tar.gz
-sudo tar -zxvf go1.22.3.linux-amd64.tar.gz -C /usr/local
+wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz
+sudo tar -zxvf go1.25.0.linux-amd64.tar.gz -C /usr/local
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 echo "Go installation completed."
 

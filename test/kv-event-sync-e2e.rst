@@ -13,7 +13,7 @@ Prerequisites
 Local Development
 ~~~~~~~~~~~~~~~~~
 
-1. **Go 1.22.6+** (managed via asdf: ``source .envrc``)
+1. **Go 1.25+** (managed via asdf: ``source .envrc``)
 2. **Docker** for building images
 3. **Kind** for local Kubernetes cluster
 4. **kubectl** configured to access the cluster
@@ -241,7 +241,7 @@ GitHub Actions
        - name: Setup Go
          uses: actions/setup-go@v4
          with:
-           go-version: '1.22'
+           go-version: '1.25'
        
        - name: Create Kind cluster
          run: |

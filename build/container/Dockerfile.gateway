@@ -1,5 +1,5 @@
 # build gateway plugins
-ARG BUILDER_IMAGE=golang:1.22
+ARG BUILDER_IMAGE=golang:1.25
 ARG RUNTIME_IMAGE=gcr.io/distroless/base-debian12:nonroot
 ARG TARGETPLATFORM
 

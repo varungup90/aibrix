@@ -12,9 +12,9 @@
 #   docker build -f apps/console/Dockerfile -t aibrix/console .
 
 # Stage 1: build the Go binary.
-# golang:1.22 (debian) is intentional — gorm.io/driver/sqlite needs CGO and
+# golang:1.25 (debian) is intentional — gorm.io/driver/sqlite needs CGO and
 # the alpine variant requires extra build-base apk packages.
-FROM golang:1.22 AS api
+FROM golang:1.25 AS api
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

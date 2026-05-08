@@ -1,6 +1,6 @@
 module github.com/vllm-project/aibrix/deployment/terraform
 
-go 1.22.6
+go 1.25
 
 require (
 	github.com/gruntwork-io/terratest v0.48.2

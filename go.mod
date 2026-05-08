@@ -1,8 +1,8 @@
 module github.com/vllm-project/aibrix
 
-go 1.22.5
+go 1.25
 
-toolchain go1.22.6
+toolchain go1.25.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
