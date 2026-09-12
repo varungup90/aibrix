@@ -71,7 +71,7 @@ func TestRedisRateLimiter_IncrAndGetCurrentWindow(t *testing.T) {
 
 	ctx := context.Background()
 	key := "userA_RPM_CURRENT"
-	redisKey := typed.genKey(key)
+	redisKey := typed.genKey(key, typed.windowSize)
 	t.Cleanup(func() {
 		_ = client.Del(ctx, redisKey).Err()
 	})
@@ -119,7 +119,7 @@ func TestRedisRateLimiter_ConcurrentIncrements(t *testing.T) {
 
 	ctx := context.Background()
 	key := "burst_MODEL_RPS_CURRENT"
-	redisKey := typed.genKey(key)
+	redisKey := typed.genKey(key, typed.windowSize)
 	t.Cleanup(func() {
 		_ = client.Del(ctx, redisKey).Err()
 	})

@@ -47,7 +47,7 @@ func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize ti
 }
 
 func (rrl redisRateLimiter) Get(ctx context.Context, key string) (int64, error) {
-	return rrl.get(ctx, rrl.genKey(key))
+	return rrl.get(ctx, rrl.genKey(key, rrl.windowSize))
 }
 
 func (rrl redisRateLimiter) GetLimit(ctx context.Context, key string) (int64, error) {
@@ -65,19 +65,23 @@ func (rrl redisRateLimiter) get(ctx context.Context, key string) (int64, error) 
 	return val, err
 }
 
-func (rrl redisRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
-	return rrl.incrAndExpire(ctx, rrl.genKey(key), val)
+func (rrl redisRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
+	w := rrl.windowSize
+	if len(window) > 0 && window[0] > 0 {
+		w = window[0]
+	}
+	return rrl.incrAndExpire(ctx, rrl.genKey(key, w), val, w)
 }
 
-func (rrl redisRateLimiter) genKey(key string) string {
-	return fmt.Sprintf("%s:%s:%d", rrl.name, key, time.Now().Unix()/int64(rrl.windowSize.Seconds())%binSize)
+func (rrl redisRateLimiter) genKey(key string, window time.Duration) string {
+	return fmt.Sprintf("%s:%s:%d", rrl.name, key, time.Now().Unix()/int64(window.Seconds())%binSize)
 }
 
-func (rrl redisRateLimiter) incrAndExpire(ctx context.Context, key string, val int64) (int64, error) {
+func (rrl redisRateLimiter) incrAndExpire(ctx context.Context, key string, val int64, window time.Duration) (int64, error) {
 	pipe := rrl.client.Pipeline()
 
 	incr := pipe.IncrBy(ctx, key, val)
-	pipe.Expire(ctx, key, rrl.windowSize)
+	pipe.Expire(ctx, key, window)
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {

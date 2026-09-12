@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -119,7 +120,7 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1)
+	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
@@ -144,11 +145,21 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
+	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
 		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
 	}
 }
 
 func modelRPSKey(model string) string {
 	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+}
+
+// rateWindow converts RateWindowSeconds into the variadic window override accepted by
+// ratelimiter.RateLimiter.Incr. A window of 1s or less means "use the limiter's default",
+// so it's represented as no override at all.
+func rateWindow(seconds int64) []time.Duration {
+	if seconds <= 1 {
+		return nil
+	}
+	return []time.Duration{time.Duration(seconds) * time.Second}
 }

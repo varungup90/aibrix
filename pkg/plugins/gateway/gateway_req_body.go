@@ -164,8 +164,16 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
 					invalidReqErr.Error(), "", "", HeaderErrorRouting, "true"), model, stream, term
 			}
+			if errors.Is(err, errReplicaInflightExceeded) {
+				limit := replicaInflightLimit(routingCtx)
+				klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
+				return replicaInflightExceededResponse(model, limit), model, stream, term
+			}
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, "error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
+		}
+		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
+			return errRes, model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
